@@ -54,6 +54,9 @@ const modelica_real EPS = 1e-15;
 
 /* Needed if we want to write all the variables into a file*/
 /* #define D */
+static modelica_integer selectQ( DATA* data, threadData_t *threadData, SOLVER_INFO* solverInfo, modelica_real* q, const modelica_real* qtm, const modelica_integer ind, const modelica_real** Qlu);
+static modelica_real lowerQ(const modelica_real x, const modelica_real q, const modelica_real dq, const modelica_real epsi);
+static modelica_real upperQ(const modelica_real x, const modelica_real q, const modelica_real dq, const modelica_real epsi);
 
 static modelica_integer deltaQ( DATA* data,const modelica_real dQ, const modelica_integer index, modelica_real* dTnextQ, modelica_real* nextQ, modelica_real* diffQ);
 static modelica_integer getDerWithStateK(const unsigned int *index, const unsigned int* leadindex, modelica_integer* der, uinteger* numDer, const uinteger k);
@@ -70,12 +73,307 @@ static uinteger minStep( const modelica_real* tqp, const uinteger size );
  */
 modelica_integer prefixedName_performBQSSSimulation(DATA* data, threadData_t *threadData, SOLVER_INFO* solverInfo)
 {
-  TRACE_PUSH
+   TRACE_PUSH
+
+  SIMULATION_INFO *simInfo = &(data->simulationInfo);
+  MODEL_DATA *mData = &(data->modelData);
+  uinteger currStepNo = 0;
+  modelica_integer retValIntegrator = 0;
+  modelica_integer retValue = 0;
+  /*uinteger ind = 0;*/
+
+  solverInfo->currentTime = simInfo->startTime;
 
   warningStreamPrint(LOG_STDOUT, 0, "This BQSS method is under development and should not be used yet.");
 
+  if (data->callback->initialAnalyticJacobianA(data, threadData))
+  {
+    infoStreamPrint(LOG_STDOUT, 0, "Jacobian or sparse pattern is not generated or failed to initialize.");
+    return UNKNOWN;
+  }
+  printSparseStructure(data, LOG_SOLVER);
+
+/* *********************************************************************************** */
+  /* Initialization */
+
+  SIMULATION_DATA *sData = (SIMULATION_DATA*)data->localData[0];
+  modelica_real* state = sData->realVars;
+  modelica_real* stateDer = sData->realVars + data->modelData.nStates;
+  const SPARSE_PATTERN* pattern = &(data->simulationInfo.analyticJacobians[data->callback->INDEX_JAC_A].sparsePattern);
+  const uinteger ROWS = data->simulationInfo.analyticJacobians[data->callback->INDEX_JAC_A].sizeRows;
+  const uinteger STATES = data->modelData.nStates;
+  uinteger numDer = 0;  /* number of derivatives influenced by state k */
+  uinteger i = 0; /* loop var */
+  modelica_integer ind = 0; /* selected state index of the state which will change next. */
+
+  modelica_boolean fail = 0;
+  modelica_real* q = NULL;  /* Approximation of states q(t) */
+  modelica_real* qtm = NULL;  /* Approximation of states at previous time q(t-) */
+  modelica_real** Qlu = NULL;  /* Lower and upper value of q(t) */
+  modelica_real* x = NULL;  	/* States x(t) */
+  modelica_real* tx = NULL;    /* Time of the states, because not all states are calculated at a specific time, each state has its own timestamp */
+  modelica_real* dQ = NULL;    /* Change in quantity of every state, default = nominal*10^-2 */
+  modelica_real* dt = NULL;    /* Change in time for every state to reach the next quantity */
+  modelica_real* epsi = NULL;    /* Hysteresis */
+
+  /* allocate memory*/
+  q = (modelica_real*)calloc(STATES, sizeof(modelica_real));
+  	  fail = (q == NULL) ? 1 : ( 0 | fail);
+  x = (modelica_real*)calloc(STATES, sizeof(modelica_real));
+  	  fail = (x == NULL) ? 1 : ( 0 | fail);
+  tx = (modelica_real*)calloc(STATES, sizeof(modelica_real));
+  	  fail = (tx == NULL) ? 1 : ( 0 | fail);
+  dQ = (modelica_real*)calloc(STATES, sizeof(modelica_real));
+  	  fail = (dQ == NULL) ? 1 : ( 0 | fail);
+  qtm = (modelica_real*)calloc(STATES, sizeof(modelica_real));
+  	  	  fail = (qtm == NULL) ? 1 : ( 0 | fail);
+  Qlu = (modelica_real**)calloc(STATES, sizeof(modelica_real*));
+   	  	  fail = (Qlu == NULL) ? 1 : ( 0 | fail);
+   for (i = 0; (i < STATES && fail == 0); i++)
+   {
+	   *(Qlu+i) = (modelica_real*)calloc(2, sizeof(modelica_real));
+	   	   fail = (*(Qlu+i) == NULL) ? 1 : ( 0 | fail);
+   }
+   dt = (modelica_real*)calloc(STATES, sizeof(modelica_real));
+    	  fail = (dt == NULL) ? 1 : ( 0 | fail);
+  epsi = (modelica_real*)calloc(STATES, sizeof(modelica_real));
+	  fail = (epsi == NULL) ? 1 : ( 0 | fail);
+
+  if (fail) return OO_MEMORY;
+
+  /* end - allocate memory */
+
+  /* further initialization of local variables */
+
+  for (i = 0; i < STATES; i++)
+  {
+
+    dQ[i] = 0.01 * data->modelData.realVarsData[i].attribute.nominal;
+    tx[i] = simInfo->startTime;
+    q[i] = state[i];
+	Qlu[i][0] = state[i] - dQ[i];
+	Qlu[i][1] = state[i] + dQ[i];
+	qtm[i] = Qlu[i][1];		/* willkührlich */
+	dt[i] = 0.0;
+	epsi[i] = 0.01 * dQ[i];
+  }
+
+/* Transform the sparsity pattern into a data structure for an index based access. */
+/*  modelica_integer* der = (modelica_integer*)calloc(ROWS, sizeof(modelica_integer));
+  if (NULL==der)
+    return OO_MEMORY;
+  for (i = 0; i < ROWS; i++)
+    der[i] = -1; */
+
+  /* TODO: ind should be changed to some reasonable value */
+  ind = 0;
+  qtm[ind] = state[ind];
+
+#ifdef DD
+  FILE* fid=NULL;
+  fid = fopen("log_qss.txt","w");
+#endif
+
+/* *********************************************************************************** */
+
+/***** Start main simulation loop *****/
+  while(solverInfo->currentTime < simInfo->stopTime)
+  {
+    modelica_integer success = 0;
+    threadData->currentErrorStage = ERROR_SIMULATION;
+    omc_alloc_interface.collect_a_little();
+
+#if !defined(OMC_EMCC)
+    /* try */
+    MMC_TRY_INTERNAL(simulationJumpBuffer)
+    {
+#endif
+
+#ifdef USE_DEBUG_TRACE
+    if (useStream[LOG_TRACE])
+      printf("TRACE: push loop step=%u, time=%.12g\n", currStepNo, solverInfo->currentTime);
+#endif
+
+#ifdef DD
+    fprintf(fid,"t = %.8f\n",solverInfo->currentTime);
+    fprintf(fid,"%16s\t%16s\t%16s\t%16s\t%16s\t%16s\n","q","qtm","x","dx","Ql","Qu");
+    for (i = 0; i < STATES; i++)
+    {
+      fprintf(fid,"%16.8f\t%16.8f\t%16.8f\t%16.8f\t%16.8f\t%16.8f\n",q[i],qtm[i],state[i],stateDer[i],Qlu[i][0],Qlu[i][1]);
+    }
+#endif
+
+    currStepNo++;
+
+/* ********************************************* SELECT Q ************************************************ */
+    Qlu[ind][0] = lowerQ(state[ind], q[ind], dQ[ind], epsi[ind]);
+    Qlu[ind][1] = upperQ(state[ind], q[ind], dQ[ind], epsi[ind]);
+    retValue = selectQ(data, threadData, solverInfo, q, qtm, ind, (const modelica_real**)Qlu);
+
+    if (OK != retValue) return retValue;
+
+
+    /*
+      * Recalculate all equations which are affected by state[ind].
+      * Unfortunately all equations will be calculated up to now. And we need to evaluate
+      * the equations as f(t,q) and not f(t,x). So all states were saved onto a local stack
+      * and overwritten by q. After evaluating the equations the states are written back.
+      */
+     for (i = 0; i < STATES; i++)
+     {
+       x[i] = state[i];   /* save current state */
+       state[i] = q[i];  /* overwrite current state for dx/dt = f(t,q) */
+     }
+
+     /* update continous system */
+     sData->timeValue = solverInfo->currentTime;
+     externalInputUpdate(data);
+     data->callback->input_function(data, threadData);
+     data->callback->functionODE(data, threadData);
+     data->callback->functionAlgebraics(data, threadData);
+     data->callback->output_function(data, threadData);
+     data->callback->function_storeDelayed(data, threadData);
+
+     for (i = 0; i < STATES; i++)
+     {
+       state[i] = x[i];  /* restore current state */
+     }
+
+
+     /* calculate time differences for the next change */
+     for (i = 0; i < STATES; i++)
+     {
+    	 if( isinf(stateDer[i]) )
+    	 {
+    		 printf("T:%lf \t state %d is INF\n",solverInfo->currentTime, i);
+    	 }
+    	 if( isnan(stateDer[i]) )
+    	 {
+    		 printf("T:%lf \t state %d is NAN\n",solverInfo->currentTime, i);
+    	 }
+
+    	 if( stateDer[i] * (q[i] - state[i]) > 0 )
+    	 {
+    		 dt[i] = (q[i]-state[i]) / stateDer[i];
+    	 }
+    	 else
+    	 {
+    		 stateDer[i] = 0.0;
+    		 dt[i] = 1.0 / stateDer[i];
+    	 }
+     }
+
+     /* calculate the shortest diff. in time */
+     ind = minStep(dt, STATES);
+
+     /* proceed states */
+     for (i = 0; i < STATES; i++)
+     {
+    	 if(stateDer[i] != 0)
+    	 {
+    		 state[i] = state[i] + stateDer[i] * dt[ind];
+    	 }
+    	 tx[i] += dt[ind];
+    	 qtm[i] = q[i]; /* prepare the next time step*/
+     }
+
+
+    solverInfo->currentTime += dt[ind];
+    solverInfo->laststep = solverInfo->currentTime;
+
+    sim_result.emit(&sim_result, data, threadData);
+
+/* ******************* ENDE DER BERECHNUNG ******************************************************* */
+
+    if (0 != strcmp("ia", MMC_STRINGDATA(data->simulationInfo.outputFormat)))
+    {
+     communicateStatus("Running", (solverInfo->currentTime-simInfo->startTime)/(simInfo->stopTime-simInfo->startTime));
+    }
+
+/* **************************************** TESTS DURCHFÜHREN UND SPEICHER AUFRÄUMEN *********************** */
+    /* check if terminate()=true */
+    if (terminationTerminate)
+    {
+      printInfo(stdout, TermInfo);
+      fputc('\n', stdout);
+      infoStreamPrint(LOG_STDOUT, 0, "Simulation call terminate() at time %f\nMessage : %s", data->localData[0]->timeValue, TermMsg);
+      simInfo->stopTime = solverInfo->currentTime;
+    }
+
+    /* terminate for some cases:
+     * - integrator fails
+     * - non-linear system failed to solve
+     * - assert was called
+     */
+    if (retValIntegrator)
+    {
+      retValue = -1 + retValIntegrator;
+      infoStreamPrint(LOG_STDOUT, 0, "model terminate | Integrator failed. | Simulation terminated at time %g", solverInfo->currentTime);
+      break;
+    }
+    else if (check_nonlinear_solutions(data, 0))
+    {
+      retValue = -2;
+      infoStreamPrint(LOG_STDOUT, 0, "model terminate | non-linear system solver failed. | Simulation terminated at time %g", solverInfo->currentTime);
+      break;
+    }
+    else if (check_linear_solutions(data, 0))
+    {
+      retValue = -3;
+      infoStreamPrint(LOG_STDOUT, 0, "model terminate | linear system solver failed. | Simulation terminated at time %g", solverInfo->currentTime);
+      break;
+    }
+    else if (check_mixed_solutions(data, 0))
+    {
+      retValue = -4;
+      infoStreamPrint(LOG_STDOUT, 0, "model terminate | mixed system solver failed. | Simulation terminated at time %g", solverInfo->currentTime);
+      break;
+    }
+    success = 1;
+#if !defined(OMC_EMCC)
+    }
+    /* catch */
+    MMC_CATCH_INTERNAL(simulationJumpBuffer)
+#endif
+    if (!success)
+    {
+      retValue =  -1;
+      infoStreamPrint(LOG_STDOUT, 0, "model terminate | Simulation terminated by an assert at time: %g", data->localData[0]->timeValue);
+      break;
+    }
+
+    TRACE_POP /* pop loop */
+  }
+  /* End of main loop */
+
+#ifdef DD
+  fprintf(fid,"t = %.8f\n",solverInfo->currentTime);
+  fprintf(fid,"%16s\t%16s\t%16s\t%16s\t%16s\t%16s\n","q","qtm","x","dx","Ql","Qu");
+  for (i = 0; i < STATES; i++)
+  {
+    fprintf(fid,"%16.8f\t%16.8f\t%16.8f\t%16.8f\t%16.8f\t%16.8f\n",q[i],qtm[i],state[i],stateDer[i],Qlu[i][0],Qlu[i][1]);
+  }
+  fclose(fid);
+#endif
+
+  /* free memory*/
+
+   free(q);
+   free(x);
+   free(qtm);
+   free(tx);
+   free(dt);
+   free(dQ);
+   for (i = 0; i < STATES; i++)
+   {
+	   free(*(Qlu + i));
+   }
+   free(Qlu);
+   free(epsi);
+   /* end - free memory */
+
   TRACE_POP
-  return 0;
+  return retValue;
 }
 
 /*! performQSSSimulation(DATA* data, SOLVER_INFO* solverInfo)
@@ -447,6 +745,227 @@ modelica_integer prefixedName_performQSSSimulation(DATA* data, threadData_t *thr
 
   TRACE_POP
   return retValue;
+}
+/*! static modelica_integer selectQ( DATA* data, modelica_real* q, const modelica_real* qtm, const modelica_integer ind, const modelica_real** Qlu)
+ *  \brief  Computes the next set of qunatized variables q, which will fullfill eqn (7) - (12). Prerequisite: states and qtm will fullfill eqn. (7)-(12)
+ *  and for some index i state(i) == qtm(i).
+ *  \param [ref] [data]  Global data object.
+ *  \param [out]  [q]	Next set of quntized variables q(t).
+ *  \param [in] [qtm]  Actual set of quantized variables q(t-).
+ *  \param [in] [ind]  The state will change after dTnextQ second.
+ *  \param [in] [dQ]  Change of quantity for state[index], (nominal value) * 10^-2.
+ *  \param [in] [epsi]  Hysteresis.
+ *  \param [ref] [Qlu]	Qlu(i,0) = lower value of q and Qlu(i,1) = upper value of q
+ *  \return  [0]  Everything is fine.
+ */
+static modelica_integer selectQ( DATA* data, threadData_t *threadData, SOLVER_INFO* solverInfo, modelica_real* q, const modelica_real* qtm, const modelica_integer ind, const modelica_real** Qlu)
+{
+	const modelica_integer STATES = data->modelData.nStates;
+	SIMULATION_DATA *sData = (SIMULATION_DATA*)data->localData[0];
+	modelica_real* state = sData->realVars;
+	modelica_real* stateDer = sData->realVars + STATES;
+	const SPARSE_PATTERN* pattern = &(data->simulationInfo.analyticJacobians[data->callback->INDEX_JAC_A].sparsePattern);
+	modelica_boolean fail = 0;
+	modelica_boolean loop = 1;
+	modelica_integer i = 0;	/* loop variable */
+	modelica_integer k = 0;	/* loop variable */
+	modelica_integer j = 0;	/* index-variable */
+	modelica_integer m = 0;	/* index-variable */
+
+	/* start of memeory aquisition */
+	modelica_real** qs = (modelica_real**) calloc(STATES, sizeof(modelica_real*));
+		fail = (qs == NULL) ? 1 : ( 0 | fail);
+	modelica_real* x = (modelica_real*)calloc(STATES, sizeof(modelica_real));	/* help-variable */
+		fail = (x == NULL) ? 1 : ( 0 | fail);
+	modelica_integer* A = (modelica_integer*)calloc(STATES, sizeof(modelica_integer));	/* index of states which will change */
+		fail = (A == NULL) ? 1 : ( 0 | fail);
+	modelica_integer* B = (modelica_integer*)calloc(STATES, sizeof(modelica_integer));	/* help-variable */
+		fail = (B == NULL) ? 1 : ( 0 | fail);
+	modelica_integer* D = (modelica_integer*)calloc(STATES, sizeof(modelica_integer));	/* index of evaluated equations */
+		fail = (D == NULL) ? 1 : ( 0 | fail);
+	for(i = 0; (i < STATES && fail == 0); i++)
+	{
+		*(qs + i) = (modelica_real*) calloc(STATES, sizeof(modelica_real));
+			fail = (*(qs+i) == NULL) ? 1 : ( 0 | fail);
+	}
+
+	if(fail) return OO_MEMORY;
+	/* end of memory aquisition */
+
+	/* part 1a. of the algorithm */
+
+	/* part 1b. of the algorithm */
+	A[ind]=1;
+	D[ind]=1;
+	for(i=0;i<STATES;i++)	qs[i][ind] = qtm[i];
+
+		/* calculate der(x_i) = f_i(qs^(i), u) */
+		for (i = 0; i < STATES; i++)
+		{
+		  x[i] = state[i];   /* save current state */
+		  state[i] = qs[i][ind];  /* overwrite current state for dx/dt = f(qs, u) */
+		}
+
+		/* update continous system */
+		sData->timeValue = solverInfo->currentTime;
+		externalInputUpdate(data);
+		data->callback->input_function(data, threadData);
+		data->callback->functionODE(data, threadData);
+		data->callback->functionAlgebraics(data, threadData);
+		data->callback->output_function(data, threadData);
+		data->callback->function_storeDelayed(data, threadData);
+
+		for (i = 0; i < STATES; i++)
+		{
+		  state[i] = x[i];  /* restore current state */
+		}
+		/* */
+
+		/* Eqn (14) */
+		if(stateDer[ind] > 0)	q[ind] = Qlu[ind][1];
+		else if(stateDer[ind] < 0)	q[ind] = Qlu[ind][0];
+			 else q[ind] = qtm[ind];
+
+	/* part 2. of the algorithm */
+		while(loop)
+		{
+			j = 0;
+			i = 0;	/* start at 0 for every loop, because A[i-1] (for some i) could be set by the next lines */
+			while(0 == j && STATES > i) j = A[i++];
+			if(0 == j) loop = 0;
+			else
+			{
+				j = i-1; /* index of state, which will change */
+
+				/* index of state derivatives depending on q(j) */
+				uinteger numDer = 0;
+				getDerWithStateK(pattern->index, pattern->leadindex, B, &numDer, j);
+
+				for(i = 0; i < numDer ; i++) /* all indizes in B */
+				{
+					m = B[i];
+					if( 0 == D[m] )
+					{
+						for(k=0;k<STATES;k++)
+						{
+							if(1 == D[k]) qs[k][m] = q[k];
+							else qs[k][m] = qtm[k];
+						}
+
+						/* eval derivative of state B[i] for qs[][B[i]]*/
+
+						for (k = 0; k < STATES; k++)
+						{
+						  x[k] = state[k];   /* save current state */
+						  state[k] = qs[k][m];  /* overwrite current state for dx/dt = f(qs, u) */
+						}
+
+						/* update continous system */
+						sData->timeValue = solverInfo->currentTime;
+						externalInputUpdate(data);
+						data->callback->input_function(data, threadData);
+						data->callback->functionODE(data, threadData);
+						data->callback->functionAlgebraics(data, threadData);
+						data->callback->output_function(data, threadData);
+						data->callback->function_storeDelayed(data, threadData);
+
+						for (k = 0; k < STATES; k++)
+						{
+						  state[k] = x[k];  /* restore current state */
+						}
+
+						if( 0 >= stateDer[m]*(qs[m][m]-state[m]) )
+						{
+							A[m] = 1;
+							/* Eqn (14) */
+							if(0 < stateDer[m]) q[m] = Qlu[m][1];
+							else if(0 > stateDer[m]) q[m]  = Qlu[m][0];
+							else q[m] = qtm[m];
+						}
+						else
+							q[m] = qtm[m];
+
+					}
+				}
+
+				for(i = 0; i < numDer; i++)
+				{
+					D[B[i]] = 1;
+					B[i] = -1;
+				}
+				A[j] = 0;
+			}
+		}
+
+	/* part 3. of the algorithm */
+	for(i = 0; i < STATES; i++)
+	{
+		if(0 == D[i]) q[i] = qtm[i];
+	}
+
+	/* free all space */
+
+	for(i = 0; i < STATES; i++)
+	{
+		free(*(qs + i));
+	}
+	free(qs);
+	free(x);
+	free(A);
+	free(B);
+	free(D);
+
+
+  return OK;
+}
+
+
+/*! static modelica_real lowerQ(modelica_real x, modelica_real q, modelica_real dq, modelica_real epsi)
+*   \brief	Calculates the lower value of q
+*   \param	[in]	[x] Value of state x at time t
+*   \param	[in]	[q] Value of q at previous time t-
+*   \param	[in]	[dq] Increment of q
+*   \param	[in]	[epsi] Hysteresis dq +- eps
+*   \return [y] Value of q at time t
+*/
+static modelica_real lowerQ(const modelica_real x, const modelica_real q, const modelica_real dq, const modelica_real epsi)
+{
+	modelica_real y = 0, xq;
+	xq = x - q;
+	    if (xq <= 1e-6) /* original <= 0 but 1e-6 because of numerical accuracy*/
+	        y =  q - dq;
+	    else
+	    {
+	        if (xq >= (epsi + dq))
+	            y = q + dq;
+	        else
+	            y = q;
+	    }
+	return y;
+}
+
+/*! static modelica_real upperQ(modelica_real x, modelica_real q, modelica_real dq, modelica_real epsi)
+*   \brief	Calculates the upper value of q
+*   \param	[in]	[x] Value of state x at time t
+*   \param	[in]	[q] Value of q at previous time t-
+*   \param	[in]	[dq] Increment of q
+*   \param	[in]	[epsi] Hysteresis dq +- eps
+*   \return [y] Value of q at time t
+*/
+static modelica_real upperQ(const modelica_real x, const modelica_real q, const modelica_real dq, const modelica_real epsi)
+{
+	modelica_real y = 0, qx;
+	qx = q - x;
+	if (qx <= 1e-6)    /* original <= 0 but 1e-6 because of numerical accuracy*/
+		y = q + dq;
+	else
+	{
+		if (qx >= (epsi + dq))
+			y = q - dq;
+		else
+			y = q;
+	}
+	return y;
 }
 
 
