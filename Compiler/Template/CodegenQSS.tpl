@@ -55,6 +55,7 @@ template translateModel(SimCode simCode)
 ::=
 match simCode
 case SIMCODE(modelInfo=modelInfo as MODELINFO(__)) then
+  let()= textFile(generateSourcefile(getName(modelInfo)), '<% getName(modelInfo) %>.c')
   let()= textFile(generateMakefile(getName(modelInfo)), '<% getName(modelInfo) %>.makefile')
   ""
 end translateModel;
@@ -67,12 +68,23 @@ case MODELINFO(__) then
   '<%dotPath(name) %>'
 end getName;
 
+template generateSourcefile(String name)
+ "Generates a QSS Solver model for simulation ."
+::=
+<<
+int main(int argc, char* argv[])
+{
+	return 0;
+}
+>>
+end generateSourcefile;
+
 template generateMakefile(String name)
  "Generates a QSM model for simulation ."
 ::=
 <<
 all: <%name%>.mo <%name%>_parameters.h <%name%>_external_functions.c
-<%\t%>mo2qsm ./<%name%>.mo
+<%\t%>mo3qsm ./<%name%>.mo
 <%\t%>qssmg  ./<%name%>.qsm $(QSSPATH)
 <%\t%>make
 <%\t%>./<%name%>
