@@ -55,7 +55,7 @@ template translateModel(SimCode simCode)
 ::=
 match simCode
 case SIMCODE(modelInfo=modelInfo as MODELINFO(__)) then
-  let()= textFile(generateSourcefile(getName(modelInfo)), '<% getName(modelInfo) %>.c')
+  let()= textFile(generateSourcefile(simCode, getName(modelInfo)), '<% getName(modelInfo) %>.c')
   let()= textFile(generateMakefile(getName(modelInfo)), '<% getName(modelInfo) %>.makefile')
   ""
 end translateModel;
@@ -68,28 +68,156 @@ case MODELINFO(__) then
   '<%dotPath(name) %>'
 end getName;
 
-template generateSourcefile(String name)
+template generateSourcefile(SimCode simCode, String name)
  "Generates a QSS Solver model for simulation ."
 ::=
 <<
-int main(int argc, char* argv[])
+<% sourceHead() %>
+void MOD_definition(int i, double *x, double *d, double t, double *dx)
 {
-	return 0;
+	switch(i)
+	{
+		<% MOD_definition(simCode) %>
+	}
 }
+
+void MOD_dependencies(int i, double *x, double *d, double t, double *der)
+{
+	switch(i)
+	{
+		<% MOD_dependencies(simCode) %>
+	}
+}
+
+void MOD_zeroCrossing(int i, double *x, double *d, double t, double *zc)
+{
+	switch(i)
+	{
+		<% MOD_zeroCrossing(simCode) %>
+	}
+}
+
+void MOD_handlerPos(int i, double *x, double *d, double t)
+{
+	switch(i)
+	{
+		<% MOD_handlerPos(simCode) %>
+	}
+}
+
+void MOD_handlerNeg(int i, double *x, double *d, double t)
+{
+	switch(i)
+	{
+		<% MOD_handlerNeg(simCode) %>
+	}
+}
+
+void MOD_output(int i, double *x, double *d, double t, double *out)
+{
+	switch(i)
+	{
+		<% MOD_output(simCode) %>
+	}
+}
+
+void QSS_initializeDataStructs(QSS_simulator simulator)
+{
+	simulator->model = QSS_Model(MOD_definition,MOD_dependencies,MOD_zeroCrossing,MOD_handlerPos,MOD_handlerNeg);
+}
+
 >>
 end generateSourcefile;
 
-template generateMakefile(String name)
- "Generates a QSM model for simulation ."
+
+template MOD_definition(SimCode simCode)
+""
 ::=
 <<
-all: <%name%>.mo <%name%>_parameters.h <%name%>_external_functions.c
+	//MOD_definition
+>>
+end MOD_definition;
+
+template MOD_dependencies(SimCode simCode)
+""
+::=
+<<
+	//MOD_dependencies
+>>
+end MOD_dependencies;
+
+template MOD_zeroCrossing(SimCode simCode)
+""
+::=
+<<
+	//MOD_zeroCrossing
+>>
+end MOD_zeroCrossing;
+
+template MOD_handlerPos(SimCode simCode)
+""
+::=
+<<
+	//MOD_handlerPos
+>>
+end MOD_handlerPos;
+
+template MOD_handlerNeg(SimCode simCode)
+""
+::=
+<<
+	//MOD_handlerNeg
+>>
+end MOD_handlerNeg;
+
+template MOD_output(SimCode simCode)
+""
+::=
+<<
+	//MOD_output
+>>
+end MOD_output;
+
+template sourceHead()
+"All include files"
+::=
+<<
+	#include <stdlib.h>
+	#include <stdio.h>
+	#include <string.h>
+	#include <math.h>
+	#include <common/utils.h>
+	#include <qss/qss_model.h>
+>>
+end sourceHead;
+
+template generateMakefile(String name)
+ "Generates the makefile. "
+::=
+<<
+LDFLAGS=-LC:/temp/QssSolver/src/libs
+LIBRARIES=-lqssh
+OUT_SRC = C:/temp/newQSS/build/bball_downstairs/<%name%>.c
+OUT = C:/temp/newQSS/build/bball_downstairs/bball_downstairs
+INCLUDES = -IC:/temp/QssSolver/src/engine -IC:/temp/QssSolver/usr/include
+
+CFLAGS= -Wall -msse2 -mfpmath=sse -O2 $(LDFLAGS) $(LIBRARIES)
+# Compiler.
+CC = gcc
+default: $(OUT)
+$(OUT):
+	$(CC) $(INCLUDES) $(OUT_SRC) $(CFLAGS) -o $@ -lm -lgsl -lconfig -lgslcblas
+.PHONY: clean
+clean:
+	rm -f $(OUT) *.dat *.log
+>>
+"all: <%name%>.mo <%name%>_parameters.h <%name%>_external_functions.c
 <%\t%>mo3qsm ./<%name%>.mo
 <%\t%>qssmg  ./<%name%>.qsm $(QSSPATH)
 <%\t%>make
 <%\t%>./<%name%>
-<%\t%>echo "set terminal wxt persist; set grid; plot \"<%name%>_x0.dat\" with lines " | gnuplot
->>
+<%\t%>echo set terminal wxt persist; set grid; plot <%name%>_x0.dat with lines | gnuplot"
+
 end generateMakefile;
 
 annotation(__OpenModelica_Interface="backend");
