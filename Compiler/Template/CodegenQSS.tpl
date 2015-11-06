@@ -56,7 +56,7 @@ template translateModel(SimCode simCode)
 match simCode
 case SIMCODE(modelInfo=modelInfo as MODELINFO(__)) then
   let()= textFile(generateSourcefile(simCode, getName(modelInfo)), '<% getName(modelInfo) %>.c')
-  let()= textFile(generateMakefile(getName(modelInfo)), '<% getName(modelInfo) %>.makefile')
+  let()= textFile(generateMakefile(simCode, getName(modelInfo)), '<% getName(modelInfo) %>.makefile')
   ""
 end translateModel;
 
@@ -191,7 +191,7 @@ template sourceHead()
 >>
 end sourceHead;
 
-template generateMakefile(String name)
+template generateMakefile(SimCode simCode, String name)
  "Generates the makefile. "
 ::=
 <<
@@ -211,13 +211,6 @@ $(OUT):
 clean:
 	rm -f $(OUT) *.dat *.log
 >>
-"all: <%name%>.mo <%name%>_parameters.h <%name%>_external_functions.c
-<%\t%>mo3qsm ./<%name%>.mo
-<%\t%>qssmg  ./<%name%>.qsm $(QSSPATH)
-<%\t%>make
-<%\t%>./<%name%>
-<%\t%>echo set terminal wxt persist; set grid; plot <%name%>_x0.dat with lines | gnuplot"
-
 end generateMakefile;
 
 annotation(__OpenModelica_Interface="backend");
