@@ -68,16 +68,48 @@ case MODELINFO(__) then
   '<%dotPath(name) %>'
 end getName;
 
+template stateVars(SimCode simCode, String name) ::=
+match simCode
+	case SIMCODE(modelInfo=MODELINFO(varInfo=VARINFO(__))) then
+//	match modelInfo
+//		case MODELINFO(varInfo=VARINFO(__)) then
+
+			'<% modelInfo.varInfo.numStateVars %>'
+
+
+
+//	end match
+end match
+end stateVars;
+
+template test() ::=
+<<
+	Was fuern Kaese <% genNames() |> wort hasindex i fromindex 1 => '<%i%>: <%wort%>' ;separator="\n";anchor%>
+>>
+end test;
+
+template genNames() ::=
+<<
+Hans
+Otto
+Silke
+>>
+end genNames;
+
 template generateSourcefile(SimCode simCode, String name)
  "Generates a QSS Solver model for simulation ."
 ::=
+let &lvar = buffer ""
 <<
 <% sourceHead() %>
+
 void MOD_definition(int i, double *x, double *d, double t, double *dx)
 {
 	switch(i)
 	{
 		<% MOD_definition(simCode) %>
+		AnzStateVars: <% stateVars(simCode, "numStateVars") %>
+		<% &lvar %>
 	}
 }
 
@@ -86,6 +118,7 @@ void MOD_dependencies(int i, double *x, double *d, double t, double *der)
 	switch(i)
 	{
 		<% MOD_dependencies(simCode) %>
+		<% test() %>
 	}
 }
 
