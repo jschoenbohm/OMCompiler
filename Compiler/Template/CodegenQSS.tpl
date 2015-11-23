@@ -68,7 +68,9 @@ case MODELINFO(__) then
   '<%dotPath(name) %>'
 end getName;
 
-template stateVars(SimCode simCode, String name) ::=
+template stateVars(SimCode simCode, String name)
+ "Dummy Funktion"
+ ::=
 match simCode
 	case SIMCODE(modelInfo=MODELINFO(varInfo=VARINFO(__))) then
 //	match modelInfo
@@ -82,19 +84,64 @@ match simCode
 end match
 end stateVars;
 
-template test() ::=
+template doSomething(SimEqSystem eq) ::=
+let &preExp = buffer ""
+let &varDecls = buffer ""
+let &auxFunction = buffer ""
+match eq
+	case SES_SIMPLE_ASSIGN(__) then
+	let expPart = daeExp(exp, contextOther, &preExp, &varDecls, &auxFunction)
+
+	<<
+		<% modelicaLine(eqInfo(eq)) %>
+		<%cref(cref)%>=<%expPart%>;
+		<%endModelicaLine() %>
+	>>
+end doSomething;
+
+template genNames(list<SimEqSystem> eqs) ::=
+	<< genNames...
+		<%eqs |> eq => doSomething(eq) %>
+		...Nothing
+	>>
+end genNames;
+
+
+
+template test(list<SimEqSystem> eqs)
+ "Dummy Funktion"
+ ::=
+
 <<
-	Was fuern Kaese <% genNames() |> wort hasindex i fromindex 1 => '<%i%>: <%wort%>' ;separator="\n";anchor%>
+	// dumpEqs(e)
+	<% eqs |> e =>
+	match e
+		case SES_SIMPLE_ASSIGN(__) then
+		'Hallo 1
+			<%match cref
+				case CREF_IDENT(__) then
+					'Hallo 2
+					(<%ident%>)'
+				case CREF_QUAL(__) then
+					'Hallo 3
+					(<%ident%>)
+					<%match componentRef
+						case CREF_IDENT(__) then
+							'Hallo 2.2
+							(<%ident%>)'
+						case CREF_QUAL(__) then
+							'Hallo 3.2
+							(<%ident%>)'
+					end match%>
+					'
+			end match%>
+		'
+	end match
+	%>
 >>
 end test;
 
-template genNames() ::=
-<<
-Hans
-Otto
-Silke
->>
-end genNames;
+
 
 template generateSourcefile(SimCode simCode, String name)
  "Generates a QSS Solver model for simulation ."
@@ -110,6 +157,11 @@ void MOD_definition(int i, double *x, double *d, double t, double *dx)
 		<% MOD_definition(simCode) %>
 		AnzStateVars: <% stateVars(simCode, "numStateVars") %>
 		<% &lvar %>
+		<% match simCode
+			case SIMCODE(__) then
+				'<%genNames(allEquations)%>'
+			end match
+		%>
 	}
 }
 
@@ -118,7 +170,11 @@ void MOD_dependencies(int i, double *x, double *d, double t, double *der)
 	switch(i)
 	{
 		<% MOD_dependencies(simCode) %>
-		<% test() %>
+		<% match simCode
+			case SIMCODE(__) then
+				'<%test(allEquations)%>'
+			end match
+		%>
 	}
 }
 
