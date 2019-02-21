@@ -100,6 +100,7 @@ import Record = NFRecord;
 import Variable = NFVariable;
 import OperatorOverloading = NFOperatorOverloading;
 import EvalConstants = NFEvalConstants;
+import IOStream;
 
 public
 function instClassInProgram
@@ -114,6 +115,7 @@ protected
   String name;
   FlatModel flat_model;
   FunctionTree funcs;
+  IOStream.IOStream xmlout;
 algorithm
   // gather here all the flags to disable expansion
   // and scalarization if -d=-nfScalarize is on
@@ -155,6 +157,10 @@ algorithm
   Typing.typeClass(inst_cls, name);
 
   // Flatten and simplify the model.
+  xmlout := IOStream.create("first.xml",IOStream.FILE("first.xml"));
+  // IOStream.append(xmlout,"Hallo Welt!\n");
+  // IOStream.close(xmlout);
+
   flat_model := Flatten.flatten(inst_cls, name);
   flat_model := EvalConstants.evaluate(flat_model);
   flat_model := SimplifyModel.simplify(flat_model);
