@@ -401,6 +401,7 @@ if true then /* Suppress output */
     "../Template/SimCodeDump.mo",
     "../Template/TaskSystemDump.mo",
     "../Template/VisualXMLTpl.mo",
+    "../Template/CodegenNFXML.mo",
 
     "../Util/AvlTree.mo",
     "../Util/AvlTreeString.mo",

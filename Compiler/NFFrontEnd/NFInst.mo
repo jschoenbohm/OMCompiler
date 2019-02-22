@@ -100,6 +100,8 @@ import Record = NFRecord;
 import Variable = NFVariable;
 import OperatorOverloading = NFOperatorOverloading;
 import EvalConstants = NFEvalConstants;
+import CodegenNFXML;
+//import Tpl;
 
 public
 function instClassInProgram
@@ -156,6 +158,8 @@ algorithm
 
   // Flatten and simplify the model.
   flat_model := Flatten.flatten(inst_cls, name);
+  print(NFFlatModel.toString(flat_model));
+  CodegenNFXML.translateModel(Tpl.emptyTxt,"Hello World\n");
   flat_model := EvalConstants.evaluate(flat_model);
   flat_model := SimplifyModel.simplify(flat_model);
   funcs := Flatten.collectFunctions(flat_model, name);
